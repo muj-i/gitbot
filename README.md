@@ -258,7 +258,8 @@ The git index keeps task 1's version until you commit, so task 1's commit contai
 The hook only fills *plain* `git commit` — `-m`, merges, squashes, and amends are deliberately left alone. Also check the hook exists: `.git/hooks/prepare-commit-msg` (rerun `gitbot init` if missing), and that `.gitbot/COMMIT_MSG` was written (`gitbot status`).
 
 **A provider fails / times out.**
-Gitbot tries the next provider with its own model. Check the relevant login with `claude auth status`, `codex login status`, or an interactive `agy` session. Generation runs in a temporary directory so repository agent instructions cannot recursively trigger commits; Claude also runs with tools and custom hooks disabled. If every provider fails, gitbot reports the errors and leaves the task/files staged for retry without committing a synthetic message. Run `gitbot task done <id> --files <task files>` again after fixing the login or quota issue.
+Gitbot tries the next provider with its own model. Check the relevant login with `claude auth status`, `codex login status`, or an interactive `agy` session. Generation runs in a dedicated session directory (`~/.gitbot/session/`) and reuses a persistent chat session across requests and models so repository agent instructions cannot recursively trigger commits and no new chat sessions are created on every request; Claude also runs with tools and custom hooks disabled. If every provider fails, gitbot reports the errors and leaves the task/files staged for retry without committing a synthetic message. Run `gitbot task done <id> --files <task files>` again after fixing the login or quota issue.
+
 
 **Nothing was promoted after my commit.**
 Promotion is asynchronous (a few seconds — it calls Claude). Check `.gitbot/hook.log`. If you committed from a GUI client that skips hooks, the daemon reconciles within `daemon_poll_seconds`.

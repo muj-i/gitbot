@@ -15,6 +15,21 @@ def result(stdout="", stderr="", code=0):
 
 
 class ProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_dir.cleanup)
+        self.session_dir = Path(self.tmp_dir.name) / "session"
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.sessions_file = Path(self.tmp_dir.name) / "sessions.json"
+        for mod in (cli_support, claude_cli, codex_cli, gemini_cli):
+            p_dir = patch.object(mod, "get_session_dir", return_value=self.session_dir)
+            self.addCleanup(p_dir.stop)
+            p_dir.start()
+        p_file = patch.object(cli_support, "_sessions_file", return_value=self.sessions_file)
+        self.addCleanup(p_file.stop)
+        p_file.start()
+
+
     def test_api_key_environment_does_not_override_signed_in_accounts(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "dummy", "OPENAI_API_KEY": "dummy",
                                     "GEMINI_API_KEY": "dummy", "CODEX_HOME": "/account"}):
@@ -62,6 +77,27 @@ class ProviderTests(unittest.TestCase):
         args = run.call_args_list[1].args[0]
         self.assertEqual(args[args.index("--tools") + 1], "")
 
+    def test_claude_reuses_session_across_models(self):
+        auth = result(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
+        with patch.object(claude_cli, "find_binary", return_value="claude"), \
+                patch.object(claude_cli, "run_cli", side_effect=[
+                    auth, result("feat: first commit"),
+                    auth, result("docs: second commit"),
+                ]) as run:
+            provider = get_provider("claude-cli")
+            msg1 = provider.generate_commit_message("prompt 1", "haiku")
+            self.assertEqual(msg1, "feat: first commit")
+            first_args = run.call_args_list[1].args[0]
+            self.assertIn("--session-id", first_args)
+            session_id = first_args[first_args.index("--session-id") + 1]
+
+            msg2 = provider.generate_commit_message("prompt 2", "sonnet")
+            self.assertEqual(msg2, "docs: second commit")
+            second_args = run.call_args_list[3].args[0]
+            self.assertIn("--resume", second_args)
+            self.assertEqual(second_args[second_args.index("--resume") + 1], session_id)
+            self.assertEqual(second_args[second_args.index("--model") + 1], "sonnet")
+
     def test_claude_api_login_is_not_used_for_subscription_fallback(self):
         auth = result(json.dumps({"loggedIn": True, "authMethod": "api_key"}))
         with patch.object(claude_cli, "find_binary", return_value="claude"), \
@@ -83,6 +119,25 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(get_provider("codex-cli").generate_commit_message("prompt", "gpt-6.1-sol"),
                              "feat: add login")
 
+    def test_codex_reuses_session_across_models(self):
+        def run(args, **kwargs):
+            if args[1] == "login":
+                return result(stderr="Logged in using ChatGPT")
+            output_file = Path(args[args.index("--output-last-message") + 1])
+            output_file.write_text("chore: done")
+            return result()
+        with patch.object(codex_cli, "find_binary", return_value="codex"), \
+                patch.object(codex_cli, "run_cli", side_effect=run) as mock_run:
+            provider = get_provider("codex-cli")
+            provider.generate_commit_message("p1", "gpt-6.1-sol")
+            first_exec_args = mock_run.call_args_list[1].args[0]
+            self.assertNotIn("resume", first_exec_args)
+
+            provider.generate_commit_message("p2", "gpt-6.1-sol")
+            second_exec_args = mock_run.call_args_list[3].args[0]
+            self.assertIn("resume", second_exec_args)
+            self.assertIn("--last", second_exec_args)
+
     def test_codex_api_key_login_is_not_used(self):
         with patch.object(codex_cli, "find_binary", return_value="codex"), \
                 patch.object(codex_cli, "run_cli", return_value=result(stderr="Logged in using an API key")):
@@ -99,6 +154,23 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("prompt", run.call_args.args[0][2])
         self.assertIn("--sandbox", run.call_args.args[0])
 
+    def test_gemini_reuses_conversation_across_models(self):
+        with patch.object(gemini_cli, "find_binary", return_value="agy"), \
+                patch.object(gemini_cli, "run_cli", side_effect=[
+                    result(json.dumps({"status": "SUCCESS", "response": "feat: one", "conversation_id": "conv-42"})),
+                    result(json.dumps({"status": "SUCCESS", "response": "fix: two", "conversation_id": "conv-42"})),
+                ]) as run:
+            provider = get_provider("gemini-cli")
+            provider.generate_commit_message("p1", "flash")
+            first_args = run.call_args_list[0].args[0]
+            self.assertNotIn("--conversation", first_args)
+
+            provider.generate_commit_message("p2", "pro")
+            second_args = run.call_args_list[1].args[0]
+            self.assertIn("--conversation", second_args)
+            self.assertEqual(second_args[second_args.index("--conversation") + 1], "conv-42")
+            self.assertEqual(second_args[second_args.index("--model") + 1], "pro")
+
     def test_gemini_rejects_authentication_errors_empty_output_and_invalid_json(self):
         for output in ['{"status":"ERROR","response":""}',
                        '{"status":"SUCCESS","response":""}', '{"status":"WAITING"}',
@@ -112,3 +184,4 @@ class ProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

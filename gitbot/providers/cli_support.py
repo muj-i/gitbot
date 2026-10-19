@@ -1,5 +1,6 @@
 """Find subscription CLIs and run them without API-key overrides."""
 
+import json
 import os
 import platform
 import shutil
@@ -10,6 +11,62 @@ from .base import ProviderError
 
 TIMEOUT_SECONDS = 240
 AUTH_TIMEOUT_SECONDS = 15
+
+
+def get_session_dir() -> Path:
+    session_dir = Path.home() / ".gitbot" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+def _sessions_file() -> Path:
+    return Path.home() / ".gitbot" / "sessions.json"
+
+
+def get_session_id(provider_name: str) -> str | None:
+    path = _sessions_file()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            return data.get(provider_name)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def save_session_id(provider_name: str, session_id: str) -> None:
+    path = _sessions_file()
+    data = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    data[provider_name] = session_id
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def clear_session_id(provider_name: str) -> None:
+    path = _sessions_file()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and provider_name in data:
+            del data[provider_name]
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2) + "\n")
+            tmp.replace(path)
+    except (json.JSONDecodeError, OSError):
+        pass
+
 
 
 def subscription_env() -> dict[str, str]:
